@@ -673,11 +673,12 @@ def test_has_table_does_not_hide_invalidated_file_connection(fake_engine, monkey
     ("dfs.tmp", "dfs.tmp.events"),
     ("dfs/a`b", "dfs.`a``b`.events"),
 ])
-def test_rendered_schema_translation_preserves_qualified_paths(target, expected):
-    table = Table("events", MetaData(), Column("id", Integer), schema="tenant")
+@pytest.mark.parametrize("source", ["tenant", "dfs/tmp", "tenant..name"])
+def test_rendered_schema_translation_preserves_qualified_paths(source, target, expected):
+    table = Table("events", MetaData(), Column("id", Integer), schema=source)
     sql = str(select(table.c.id).compile(
         dialect=DrillDialect_sadrill(),
-        schema_translate_map={"tenant": target},
+        schema_translate_map={source: target},
         render_schema_translate=True,
     ))
     assert sql == f"SELECT events.id \nFROM {expected}"

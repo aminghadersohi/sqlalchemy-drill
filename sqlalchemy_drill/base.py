@@ -187,6 +187,12 @@ class DrillIdentifierPreparer(compiler.IdentifierPreparer):
         if schema is None or str(schema) == "":
             return ()
 
+        # Translation tokens carry the *source* schema as an opaque map key.
+        # In particular, rewriting a slash here changes which schema is selected.
+        if (isinstance(schema, quoted_name) and schema.quote is False
+                and schema.startswith("__[SCHEMA_") and schema.endswith("]")):
+            return (schema,)
+
         # SQLAlchemy URLs commonly spell ``dfs.tmp`` as ``dfs/tmp``.  Dots and
         # slashes in a schema therefore delimit Drill's plugin/workspace path;
         # table names are always passed separately so file extensions remain a

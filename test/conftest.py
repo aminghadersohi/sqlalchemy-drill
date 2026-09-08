@@ -51,7 +51,7 @@ def wait_for_http_up(drill_container):
             if status_code == 200:
                 print(f"Received HTTP {status_code}")
                 return
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
             pass
         time.sleep(1)
     raise RuntimeError(f"Apache Drill did not become ready at {url}")

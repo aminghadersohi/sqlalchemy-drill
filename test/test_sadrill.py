@@ -168,3 +168,27 @@ def test_injection_shaped_identifiers_stay_identifiers(drill_conn):
         # server error as a successful absence check.
         with pytest.raises(sa_exc.DBAPIError):
             inspector.has_table(table_name, schema="dfs.tmp")
+
+
+def test_readiness_retries_a_slow_starting_http_endpoint(monkeypatch):
+    from types import SimpleNamespace
+    from . import conftest
+
+    replies = iter([conftest.requests.exceptions.ReadTimeout(), SimpleNamespace(status_code=200)])
+    calls = []
+
+    def get(url, timeout):
+        calls.append((url, timeout))
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(conftest.requests, "get", get)
+    monkeypatch.setattr(conftest.time, "sleep", lambda _seconds: None)
+    container = SimpleNamespace(
+        get_container_host_ip=lambda: "127.0.0.1",
+        get_exposed_port=lambda _port: "8047",
+    )
+    conftest.wait_for_http_up(container)
+    assert calls == [("http://127.0.0.1:8047", 2)] * 2

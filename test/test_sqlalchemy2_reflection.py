@@ -484,11 +484,11 @@ def test_rest_qmark_substitution_rejects_parameter_count_or_style_errors(
 
 
 def test_rest_qmark_substitution_does_not_end_a_block_comment_at_slash_star_slash():
-    # Regression for a scanner divergence from Drill.  The driver consumed the
+    # Regression for a scanner divergence from Drill. A scanner that consumes the
     # `/*` opener one character at a time, so the opener's `*` was re-read as a
     # closer and `/*/` looked like a finished comment.  Drill disagrees:
     # "SELECT /*/ 1 */ 2 AS v FROM (values(1))" returns 2 on Drill 1.21.2.
-    # The exploit that fell out of the divergence: the driver rendered a
+    # An exploit enabled by that divergence: the scanner renders a
     # parameter into what it thought was live SQL but Drill was still treating
     # as a comment, and a value containing */ then escaped it.
     hostile = "a*/ 999 AS pwned FROM (values(1)) -- "
@@ -681,3 +681,15 @@ def test_rendered_schema_translation_preserves_qualified_paths(target, expected)
         render_schema_translate=True,
     ))
     assert sql == f"SELECT events.id \nFROM {expected}"
+
+
+def test_execute_rejects_a_scalar_parameter_as_dbapi_programming_error():
+    def unexpected_submission(_query):
+        raise AssertionError("invalid parameters must not reach the server")
+
+    connection = python_types.SimpleNamespace(
+        _connected=True, submit_query=unexpected_submission
+    )
+    cursor = RestCursor(connection)
+    with pytest.raises(ProgrammingError, match="sequence"):
+        cursor.execute("SELECT ?", 1)

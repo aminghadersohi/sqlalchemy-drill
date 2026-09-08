@@ -60,9 +60,19 @@ def _fail(message):
     raise CheckFailed(message)
 
 
+def _check_archive_paths(names):
+    normalized = [posixpath.normpath(name.rstrip('/')) for name in names]
+    if any(canonical != raw.rstrip('/') or raw.startswith('/') or "\\" in raw
+           or '..' in raw.split('/') for raw, canonical in zip(names, normalized)):
+        _fail('archive contains non-canonical or unsafe paths')
+    if len(normalized) != len(set(normalized)):
+        _fail('archive contains colliding extraction destinations')
+
+
 def check_wheel(wheel_path, expected_version):
     with zipfile.ZipFile(wheel_path) as archive:
         names = archive.namelist()
+        _check_archive_paths(names)
         if len(names) != len(set(names)):
             _fail('wheel contains duplicate paths')
         if any(name.startswith('/') or '..' in name.split('/') for name in names):
@@ -108,6 +118,7 @@ def check_sdist(sdist_path, expected_version):
     with tarfile.open(sdist_path) as archive:
         members = archive.getmembers()
         names = archive.getnames()
+        _check_archive_paths(names)
         if len(names) != len(set(names)):
             _fail('sdist contains duplicate paths')
         for member in members:

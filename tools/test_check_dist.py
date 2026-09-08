@@ -95,3 +95,24 @@ def test_reject_corrupt_archive(tmp_path, name):
 def test_reject_missing_source_test_dependency(tmp_path, missing):
     make_dist(tmp_path, omit=missing)
     assert check(tmp_path) == 1
+
+
+@pytest.mark.parametrize("separator", ["/./", "//"])
+@pytest.mark.parametrize("kind", ["wheel", "sdist"])
+def test_reject_normalized_extraction_collisions(tmp_path, separator, kind):
+    make_dist(tmp_path)
+    if kind == "wheel":
+        with zipfile.ZipFile(tmp_path / WHEEL, "a") as archive:
+            archive.writestr("sqlalchemy_drill" + separator + "__init__.py", "overwrite")
+    else:
+        path = tmp_path / SDIST
+        with tarfile.open(path) as archive:
+            members = [(info, archive.extractfile(info).read())
+                       for info in archive.getmembers()]
+        with tarfile.open(path, "w:gz") as archive:
+            for info, data in members:
+                archive.addfile(info, io.BytesIO(data))
+            alias = tarfile.TarInfo(f"sqlalchemy_drill-{VERSION}/test{separator}dbapi20.py")
+            alias.size = 9
+            archive.addfile(alias, io.BytesIO(b"overwrite"))
+    assert check(tmp_path) == 1

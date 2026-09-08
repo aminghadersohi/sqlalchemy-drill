@@ -183,7 +183,12 @@ class Cursor:
         if parameters is None:
             parameters = ()
 
-        parameters = tuple(parameters)
+        try:
+            parameters = tuple(parameters)
+        except TypeError as error:
+            raise ProgrammingError(
+                'qmark parameters must be supplied as a sequence', None
+            ) from error
         output = []
         parameter_index = 0
         position = 0

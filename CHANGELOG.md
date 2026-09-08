@@ -15,10 +15,9 @@
   question marks introduced by parameter values.
 - Preserve opaque DBAPI failures during dynamic column reflection and classpath
   existence probes: a failed SELECT is not proof that a table is absent.
-- Define SQLAlchemy 2 `import_dbapi()` hooks directly on REST, JDBC, and ODBC
-  dialects while retaining the older `dbapi()` compatibility hooks. On
-  SQLAlchemy 2 the JDBC and ODBC dialects previously inherited the REST
-  `import_dbapi()` and connected over HTTP instead of their own transport.
+- Define native `import_dbapi()` hooks directly on JDBC and ODBC dialects,
+  retaining `dbapi()` compatibility aliases and avoiding SQLAlchemy's deprecated
+  legacy-hook fallback. REST already provides its native hook.
 
 ### Changed
 

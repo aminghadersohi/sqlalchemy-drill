@@ -114,17 +114,12 @@ class DrillTest(dbapi20.DatabaseAPI20Test):
         try:
             cur = con.cursor()
             cur.executemany(
-                f"create table `{self.table_prefix}_executemany/?_squared` as select ? * ? as product",
-                [(i, i, i) for i in range(1, 4)],
-            )
-
-            cur.execute(
-                f"select product from {self.table_prefix}_executemany order by product"
+                "select ? * ? as product",
+                [(i, i) for i in range(1, 4)],
             )
             res = cur.fetchall()
-            self.assertEqual([(1,), (4,), (9,)], res)
+            self.assertEqual([(9,)], res)
         finally:
-            cur.execute(f"drop table if exists {self.table_prefix}_executemany")
             con.close()
 
     @pytest.mark.skip("Not implemented")

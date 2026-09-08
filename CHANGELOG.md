@@ -8,18 +8,13 @@
   previously failed with `VALIDATION ERROR: Table '<plugin>' not found`.
 - Execute reflection statements through SQLAlchemy executable objects on
   SQLAlchemy 2, binding metadata values and quoting qualified Drill identifiers.
-- Resolve the storage plugin type for a bare plugin name such as `dfs`.
-  `INFORMATION_SCHEMA.SCHEMATA` lists only fully qualified workspaces, so an
-  exact-match lookup reflected these schemas as empty.
-- Escape REST DB-API qmark parameters without treating question marks in values,
-  SQL string literals, quoted identifiers, or comments as new placeholders, and
-  parse `/*` block comments as Drill does. Previously `/*/` was treated as a
-  complete comment, so a parameter could be rendered into text Drill still
-  treats as commented out and escape it with `*/`.
-- Render `datetime` parameters as `yyyy-MM-dd HH:mm:ss`. The ISO `T` separator
-  raises `DateTimeParseException` in Drill.
-- Report a missing file-backed table as `NoSuchTableError` rather than letting a
-  raw `DBAPIError` escape reflection.
+- Preserve bare-plugin/workspace lookup while binding literal metadata values
+  and escaping LIKE wildcard characters instead of interpolating substring SQL.
+- Escape REST DB-API qmark parameters once, ignoring question marks in SQL
+  literals, identifiers and comments (including `/*/`), and never reinterpreting
+  question marks introduced by parameter values.
+- Preserve opaque DBAPI failures during dynamic column reflection and classpath
+  existence probes: a failed SELECT is not proof that a table is absent.
 - Define SQLAlchemy 2 `import_dbapi()` hooks directly on REST, JDBC, and ODBC
   dialects while retaining the older `dbapi()` compatibility hooks. On
   SQLAlchemy 2 the JDBC and ODBC dialects previously inherited the REST
@@ -29,8 +24,7 @@
 
 - `DrillIdentifierPreparer.format_drill_table()` now takes the schema and table
   name as separate arguments. The old `format_drill_table(path, isFile=...)`
-  signature raises `TypeError` instead of being silently accepted, which used to
-  produce identifiers such as ``dfs.tmp.f.csv.`False```. Use
+  signature is no longer supported and raises `TypeError`. Use
   `format_drill_schema()` to format a schema on its own.
 - `get_columns()` no longer interprets a `table_name` containing `SELECT ` as a
   subquery to reflect. Reflection now always treats the argument as an

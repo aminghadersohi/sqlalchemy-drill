@@ -349,18 +349,16 @@ def test_get_plugin_type_escapes_like_wildcards_in_the_pattern(fake_engine):
     assert pattern == "we\\_ird\\%plug\\\\in.%"
 
 
-def test_missing_file_backed_table_raises_no_such_table(fake_engine):
+def test_dynamic_reflection_preserves_opaque_dbapi_failures(fake_engine):
     engine, state = fake_engine
-    # Drill reports an unknown file as a statement failure, not as an empty
-    # result set.  Reflection must still surface NoSuchTableError so that the
-    # file path behaves like the INFORMATION_SCHEMA path.
+    # Drill can suppress the reason for a failed query. It is unsafe to
+    # assume that an opaque failure means the table does not exist.
     state.failure_text = "SELECT * FROM dfs.tmp.`gone.parquet`"
     with engine.connect() as connection:
-        with pytest.raises(sa_exc.NoSuchTableError):
+        with pytest.raises(sa_exc.DBAPIError):
             connection.dialect.get_columns(connection, "gone.parquet", "dfs.tmp")
-        assert not connection.dialect.has_table(
-            connection, "gone.parquet", "dfs.tmp"
-        )
+        with pytest.raises(sa_exc.DBAPIError):
+            connection.dialect.has_table(connection, "gone.parquet", "dfs.tmp")
 
 
 def test_literal_reflection_values_are_bound_and_not_in_sql(fake_engine):
@@ -669,3 +667,17 @@ def test_has_table_does_not_hide_invalidated_file_connection(fake_engine, monkey
         with pytest.raises(sa_exc.DBAPIError) as failure:
             connection.dialect.has_table(connection, "gone.parquet", "dfs.tmp")
         assert failure.value.connection_invalidated
+
+
+@pytest.mark.parametrize("target, expected", [
+    ("dfs.tmp", "dfs.tmp.events"),
+    ("dfs/a`b", "dfs.`a``b`.events"),
+])
+def test_rendered_schema_translation_preserves_qualified_paths(target, expected):
+    table = Table("events", MetaData(), Column("id", Integer), schema="tenant")
+    sql = str(select(table.c.id).compile(
+        dialect=DrillDialect_sadrill(),
+        schema_translate_map={"tenant": target},
+        render_schema_translate=True,
+    ))
+    assert sql == f"SELECT events.id \nFROM {expected}"

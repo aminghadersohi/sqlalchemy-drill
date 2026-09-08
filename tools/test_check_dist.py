@@ -19,7 +19,7 @@ SDIST = f"sqlalchemy_drill-{VERSION}.tar.gz"
 
 def make_dist(path, wheel_version=VERSION, sdist_version=VERSION,
               wheel_name="sqlalchemy_drill", sdist_name="sqlalchemy_drill",
-              leak_test=False):
+              leak_test=False, omit=None):
     metadata = f"Name: {wheel_name}\nVersion: {wheel_version}\n"
     with zipfile.ZipFile(path / WHEEL, "w") as archive:
         archive.writestr(f"sqlalchemy_drill-{VERSION}.dist-info/METADATA", metadata)
@@ -28,6 +28,8 @@ def make_dist(path, wheel_version=VERSION, sdist_version=VERSION,
             archive.writestr("test/__init__.py", "")
     with tarfile.open(path / SDIST, "w:gz") as archive:
         for name in (*check_dist.REQUIRED_SDIST_PATHS, "PKG-INFO"):
+            if name == omit:
+                continue
             data = (f"Name: {sdist_name}\nVersion: {sdist_version}\n"
                     if name == "PKG-INFO" else "").encode()
             info = tarfile.TarInfo(f"sqlalchemy_drill-{VERSION}/{name}")
@@ -86,4 +88,10 @@ def test_reject_archive_metadata_and_namespace(tmp_path, kwargs):
 def test_reject_corrupt_archive(tmp_path, name):
     make_dist(tmp_path)
     (tmp_path / name).write_bytes(b"not an archive")
+    assert check(tmp_path) == 1
+
+
+@pytest.mark.parametrize("missing", ["test/dbapi20.py", "test/__init__.py", "ivy.xml", "resolve.sh"])
+def test_reject_missing_source_test_dependency(tmp_path, missing):
+    make_dist(tmp_path, omit=missing)
     assert check(tmp_path) == 1

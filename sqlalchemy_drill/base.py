@@ -27,6 +27,7 @@ from urllib.parse import unquote
 from sqlalchemy import exc, inspect, pool, text, types
 from sqlalchemy.engine import default, reflection
 from sqlalchemy.sql import compiler
+from sqlalchemy.sql.elements import quoted_name
 
 logger = logging.getLogger('drilldbapi')
 
@@ -193,7 +194,11 @@ class DrillIdentifierPreparer(compiler.IdentifierPreparer):
         parts = str(schema).replace("/", ".").split(".")
         if any(part == "" for part in parts):
             raise ValueError("Drill schema paths cannot contain empty components")
-        return tuple(parts)
+        # SQLAlchemy schema-translation tokens are quoted_name(quote=False).
+        # Keep this contract until the compiler substitutes the actual schema;
+        # otherwise a mapped plugin.workspace becomes one backticked token.
+        quote = getattr(schema, "quote", None)
+        return tuple(quoted_name(part, quote=quote) for part in parts)
 
     def quote_schema(self, schema, force=None):
         """Quote each component of a qualified Drill schema independently."""
@@ -424,9 +429,8 @@ class DrillDialect(default.DefaultDialect):
             # Classpath resources (notably cp.default) are queryable but are
             # not returned by SHOW FILES.  Probe them through the same quoted
             # identifier path used for dynamic column reflection.  A DBAPI
-            # statement failure means that this candidate file is not a table;
-            # non-DBAPI failures (including connection/iteration errors) still
-            # propagate to the caller.
+            # failure cannot distinguish absence from permission/server errors
+            # when Drill suppresses error details, so DBAPI failures propagate.
             try:
                 return bool(self.get_columns(
                     connection,
@@ -483,18 +487,10 @@ class DrillDialect(default.DefaultDialect):
             # This SQL contains identifiers, not literal values.  Using
             # exec_driver_sql avoids text() treating a colon inside a quoted
             # identifier as a bind marker.
-            try:
-                column_metadata = connection.exec_driver_sql(
-                    q).cursor.description
-            except exc.DBAPIError as ex:
-                # Drill reports an unknown file as a statement failure.  Report
-                # it the way SQLAlchemy reflection expects, but never swallow a
-                # broken connection.
-                if ex.connection_invalidated:
-                    raise
-                raise exc.NoSuchTableError(
-                    f"{schema + '.' if schema else ''}{table_name}"
-                ) from ex
+            # Drill may omit error details, so a failed SELECT cannot prove
+            # absence. Keep permission, syntax, server and connection errors
+            # visible instead of misclassifying them as NoSuchTableError.
+            column_metadata = connection.exec_driver_sql(q).cursor.description
 
             for row in column_metadata:
                 # row[1] is a DBAPITypeObject - extract the type name from its values

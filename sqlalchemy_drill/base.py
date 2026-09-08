@@ -407,15 +407,21 @@ class DrillDialect(default.DefaultDialect):
     @reflection.cache
     def has_table(self, connection, table_name, schema=None, **kwargs):
         schema = self._schema_name(connection, schema)
-        row = connection.execute(
+        curs = connection.execute(
             text(
                 "SELECT 1 FROM INFORMATION_SCHEMA.`TABLES` "
                 "WHERE `TABLE_SCHEMA` = :schema "
                 "AND `TABLE_NAME` = :table_name LIMIT 1"
             ),
             {"schema": schema, "table_name": table_name},
-        ).first()
-        if row is not None:
+        )
+        try:
+            # LIMIT 1 bounds this read. first() closes without checking the
+            # trailing REST queryState, which may report an opaque failure.
+            rows = curs.fetchall()
+        finally:
+            curs.close()
+        if rows:
             return True
 
         # File-backed tables are discovered through SHOW FILES rather than
@@ -496,7 +502,15 @@ class DrillDialect(default.DefaultDialect):
             # Drill may omit error details, so a failed SELECT cannot prove
             # absence. Keep permission, syntax, server and connection errors
             # visible instead of misclassifying them as NoSuchTableError.
-            column_metadata = connection.exec_driver_sql(q).cursor.description
+            curs = connection.exec_driver_sql(q)
+            try:
+                column_metadata = curs.cursor.description
+                # Metadata precedes rows and final queryState in REST results.
+                # Exhaust this LIMIT 1 probe through SQLAlchemy so trailing
+                # DBAPI errors are wrapped, and never cache failed reflection.
+                curs.fetchall()
+            finally:
+                curs.close()
 
             for row in column_metadata:
                 # row[1] is a DBAPITypeObject - extract the type name from its values

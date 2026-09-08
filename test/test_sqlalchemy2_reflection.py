@@ -694,3 +694,152 @@ def test_execute_rejects_a_scalar_parameter_as_dbapi_programming_error():
     cursor = RestCursor(connection)
     with pytest.raises(ProgrammingError, match="sequence"):
         cursor.execute("SELECT ?", 1)
+
+
+@pytest.mark.parametrize("opener", ["--", "//"])
+@pytest.mark.parametrize("ending", ["\r", "\n", "\r\n", ""])
+def test_rest_drill_line_comments(opener, ending):
+    # Parser.jj 8591-8594: both forms end at CR, LF, CRLF, or EOF.
+    comment = opener + " ?"
+    template = "SELECT " + comment + ending
+    parameters = ()
+    expected = template
+    if ending:
+        template += " ? AS v FROM (values(1))"
+        parameters = (1,)
+        expected += " 1 AS v FROM (values(1))"
+    assert RestCursor.substitute_in_query(template, parameters) == expected
+    with pytest.raises(ProgrammingError, match="Too many"):
+        RestCursor.substitute_in_query(template, ("\n999 + -- ",) + parameters)
+    if ending:
+        with pytest.raises(ProgrammingError, match="Not enough"):
+            RestCursor.substitute_in_query(template, ())
+
+
+@pytest.mark.parametrize("comment", [
+    "/*/ ? */", "/***/ ? */", "/**? ? */", "/**\n? */",
+    "/**/", "/****/", "/* outer /* ? */",
+])
+def test_rest_drill_block_comment_openers(comment):
+    # Parser.jj 8581-8605: /** followed by a non-slash consumes FOUR
+    # characters; /**/ instead uses the two-character /* opener. No nesting.
+    hostile = "a*/ 999 + -- ? ' //"
+    template = "SELECT " + comment + " ?"
+    assert RestCursor.substitute_in_query(template, (hostile,)) == (
+        "SELECT " + comment + " 'a*/ 999 + -- ? '' //'"
+    )
+    with pytest.raises(ProgrammingError, match="Too many"):
+        RestCursor.substitute_in_query(template, (hostile, 1))
+    with pytest.raises(ProgrammingError, match="Not enough"):
+        RestCursor.substitute_in_query(template, ())
+
+
+@pytest.mark.parametrize("opener", ["/*/", "/***/", "/**?", "/**\r"])
+def test_rest_drill_unterminated_formal_comments(opener):
+    template = "SELECT " + opener + " ?"
+    assert RestCursor.substitute_in_query(template, ()) == template
+    with pytest.raises(ProgrammingError, match="Too many"):
+        RestCursor.substitute_in_query(template, ("*/ 999 -- ",))
+
+
+@pytest.fixture
+def streaming_rest_engine(monkeypatch):
+    import io
+    import json
+
+    import requests
+
+    from sqlalchemy_drill.drilldbapi._drilldbapi import Connection
+
+    state = python_types.SimpleNamespace(
+        query_state="FAILED", rows=[{"v": "1"}], cursors=[], calls=[]
+    )
+
+    def post(_url, *, data, **_kwargs):
+        query = json.loads(data)["query"]
+        state.calls.append(query)
+        columns, metadata, rows = ["v"], ["INTEGER"], state.rows
+        query_state = "COMPLETED"
+        if "sys.drillbits" in query:
+            columns, metadata = ["version"], ["VARCHAR"]
+            rows = [{"version": "1.21.2"}]
+        elif "INFORMATION_SCHEMA.`SCHEMATA`" in query:
+            columns, metadata = ["SCHEMA_NAME", "TYPE"], ["VARCHAR"] * 2
+            plugin_type = "jdbc" if state.probe == "exists" else "file"
+            rows = [{"SCHEMA_NAME": "cp.default", "TYPE": plugin_type}]
+        elif "SHOW FILES" in query or "INFORMATION_SCHEMA.`VIEWS`" in query:
+            rows = []
+        elif query.startswith("SELECT 1") and state.probe == "fallback":
+            rows = []
+        else:
+            query_state = state.query_state
+        # The real Requests response and REST cursor parse rows before the
+        # opaque trailing state, matching StreamingHttpConnection.finish().
+        response = requests.Response()
+        response.status_code = 200
+        response.raw = io.BytesIO(json.dumps({
+            "columns": columns, "metadata": metadata, "rows": rows,
+            "queryState": query_state,
+        }).encode())
+        return response
+
+    original_cursor = Connection.cursor
+
+    def cursor(connection):
+        result = original_cursor(connection)
+        state.cursors.append(result)
+        return result
+
+    monkeypatch.setattr(Connection, "cursor", cursor)
+    session = requests.Session()
+    monkeypatch.setattr(session, "post", post)
+    engine = create_engine(
+        "drill+sadrill://localhost:8047/cp.default",
+        creator=lambda: Connection("localhost", 8047, "http://", None, session),
+    )
+    try:
+        yield engine, state
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("probe", ["columns", "exists", "fallback"])
+@pytest.mark.parametrize("rows", [[], [{"v": "1"}]])
+def test_rest_reflection_exhausts_trailing_state(streaming_rest_engine, probe, rows):
+    engine, state = streaming_rest_engine
+    state.probe, state.rows = probe, rows
+    with engine.connect() as connection:
+        dialect = connection.dialect
+        method = dialect.get_columns if probe == "columns" else dialect.has_table
+        cache = {}
+        for _ in range(2):
+            with pytest.raises(sa_exc.DBAPIError, match="query state is FAILED"):
+                method(connection, "resource.json", "cp.default", info_cache=cache)
+            assert all(not cursor._is_open for cursor in state.cursors)
+            assert not [key for key in cache if key[0] in ("get_columns", "has_table")]
+        # Identical payload fails on normal fetch-to-exhaustion too. In the
+        # one-row case, merely fetching that row has not checked final state.
+        result = connection.exec_driver_sql("SELECT * FROM cp.default.t LIMIT 1")
+        cursor = result.cursor
+        try:
+            assert cursor.description[0][0] == "v"
+            assert "queryState" not in cursor.result_md
+            if rows:
+                assert result.fetchone() == ("1",)
+                assert "queryState" not in cursor.result_md
+            with pytest.raises(sa_exc.DBAPIError, match="query state is FAILED"):
+                result.fetchall()
+        finally:
+            result.close()
+        assert not cursor._is_open
+
+        state.query_state = "COMPLETED"
+        value = method(connection, "resource.json", "cp.default", info_cache=cache)
+        if probe == "columns":
+            assert [column["name"] for column in value] == ["v"]
+        else:
+            assert value is (probe == "fallback" or bool(rows))
+        assert all(not cursor._is_open for cursor in state.cursors)
+        calls = len(state.calls)
+        assert method(connection, "resource.json", "cp.default", info_cache=cache) == value
+        assert len(state.calls) == calls

@@ -150,17 +150,17 @@ class Cursor:
     # mistaken for a placeholder.  Each quoted form uses the doubled-delimiter
     # escape that Drill accepts, and each closing delimiter is optional so an
     # unterminated construct swallows the rest of the statement instead of
-    # exposing later text as SQL.  The block-comment branch must consume the
-    # whole `/*` opener: scanning it one character at a time made `/*/` look
-    # like a complete comment, which let a parameter be rendered into text
-    # Drill still treats as commented out.
+    # exposing later text as SQL. Drill 1.21.2 Parser.jj (8581-8612) uses
+    # longest-match openers: a formal comment consumes /** AND the following
+    # non-slash character before looking for */. Thus /***/ is unterminated,
+    # just like /*/. Never reuse an opener character as part of the closer.
     _TOKEN_PATTERN = re.compile(
         r"""
           '[^']*(?:''[^']*)*'?          # string literal
         | "[^"]*(?:""[^"]*)*"?          # double-quoted identifier
         | `[^`]*(?:``[^`]*)*`?          # backtick-quoted identifier
-        | --[^\r\n]*                    # line comment
-        | /\*[\s\S]*?(?:\*/|\Z)         # block comment
+        | (?:--|//)[^\r\n]*(?:\r\n|[\r\n])?  # line comment
+        | /\*(?:\*[^/])?[\s\S]*?(?:\*/|\Z)  # block/formal comment
         | \?                            # qmark placeholder
         """,
         re.VERBOSE,
